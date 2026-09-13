@@ -1,0 +1,136 @@
+# ---------------------------------------------------------------------------
+# BOUNDARY 3 — the network
+#
+# Policy at the application layer is advisory if the agent can simply open a
+# socket to the tool. These policies make the broker the only route that
+# exists, so "bypass the broker" is not a decision the agent gets to make.
+#
+# NOTE: kind's default CNI (kindnet) does NOT enforce NetworkPolicy. Applied
+# to a default kind cluster these objects exist and do nothing — which is a
+# neat illustration of this repo's whole argument. `make cluster` installs
+# Calico so they are actually enforced.
+# ---------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: agent-boundary
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# DNS is the one thing everything needs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: agent-boundary
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+---
+# The agent may egress to exactly one place: the broker.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-egress-broker-only
+  namespace: agent-boundary
+spec:
+  podSelector:
+    matchLabels: {tier: agent}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app: tool-broker}
+      ports:
+        - {protocol: TCP, port: 8081}
+---
+# ...and to its model, which is the one exception and deserves saying out
+# loud: an agent that reasons needs a route to something that reasons. That
+# route is an egress channel out of your segmented network, carrying
+# whatever the agent has read. The broker can refuse a tool call. It cannot
+# refuse a sentence in a prompt.
+#
+# So the exception is written narrowly — two ports, never the pod or service
+# network — and in a real environment it points at a gateway you control,
+# not at api.some-vendor.com. This is the rule most agent designs are
+# missing, because in a sandbox the model endpoint was simply reachable.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-egress-model
+  namespace: agent-boundary
+spec:
+  podSelector:
+    matchLabels: {tier: agent}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 192.168.0.0/16   # pod network — the tools live here
+              - 10.96.0.0/12     # service network
+      ports:
+        - {protocol: TCP, port: 11434}  # a model served on the host (Ollama)
+        - {protocol: TCP, port: 443}    # or a hosted model API
+---
+# The broker accepts traffic only from the agent tier.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: broker-ingress-from-agents
+  namespace: agent-boundary
+spec:
+  podSelector:
+    matchLabels: {app: tool-broker}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {tier: agent}
+      ports:
+        - {protocol: TCP, port: 8081}
+---
+# The broker may egress to the tools.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: broker-egress-tools
+  namespace: agent-boundary
+spec:
+  podSelector:
+    matchLabels: {app: tool-broker}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {tier: tool}
+      ports:
+        - {protocol: TCP, port: 8080}
+---
+# Tools accept traffic only from the broker. Not from agents. Not from
+# anything else in the namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tools-ingress-from-broker-only
+  namespace: agent-boundary
+spec:
+  podSelector:
+    matchLabels: {tier: tool}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app: tool-broker}
+      ports:
+        - {protocol: TCP, port: 8080}

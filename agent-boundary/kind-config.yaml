@@ -1,0 +1,11 @@
+# Default kindnet does not enforce NetworkPolicy, so we disable it and
+# install Calico in its place. Without this, every NetworkPolicy in k8s/
+# is accepted by the API server and silently does nothing.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: agent-boundary
+networking:
+  disableDefaultCNI: true
+  podSubnet: "192.168.0.0/16"
+nodes:
+  - role: control-plane

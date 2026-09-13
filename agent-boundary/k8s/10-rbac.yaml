@@ -1,0 +1,50 @@
+# ---------------------------------------------------------------------------
+# BOUNDARY 1 — Kubernetes RBAC
+#
+# The agent runs as a service account with almost nothing granted.
+# It cannot read Secrets, cannot list Pods, cannot exec into anything.
+#
+# Most agent demos run in the default service account, which in a
+# permissive cluster can read Secrets across the namespace. That is the
+# first thing that stops being true in production.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: claims-agent
+  namespace: agent-boundary
+automountServiceAccountToken: true
+---
+# Deliberately minimal: read its own ConfigMap, nothing else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: claims-agent
+  namespace: agent-boundary
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["agent-src"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: claims-agent
+  namespace: agent-boundary
+subjects:
+  - kind: ServiceAccount
+    name: claims-agent
+    namespace: agent-boundary
+roleRef:
+  kind: Role
+  name: claims-agent
+  apiGroup: rbac.authorization.k8s.io
+---
+# The broker needs no Kubernetes API access at all.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tool-broker
+  namespace: agent-boundary
+automountServiceAccountToken: false
