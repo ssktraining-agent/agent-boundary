@@ -1,8 +1,8 @@
 # Scenario 3 — the document that gives orders
 
 ```bash
-make model-check
-make demo-agent
+task model-check
+task demo-agent
 ```
 
 This is the run with a model actually deciding. Nothing in the plan is fixed.
@@ -74,8 +74,8 @@ broker is down for maintenance".
 ```bash
 kubectl apply -f k8s/20-services.yaml
 kubectl -n agent-boundary rollout restart deploy/claims-api
-make demo-agent
-make denials
+task demo-agent
+task denials
 ```
 
 You will get better tool calls out of the model. You will not get a different

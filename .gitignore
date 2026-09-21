@@ -3,3 +3,4 @@
 audit.jsonl
 kubeconfig
 test/.run/
+.claude/

@@ -1,8 +1,13 @@
 # Scenario 1 — what the agent is allowed to do
 
 ```bash
-make demo
+task demo
 ```
+
+This is the fixed-sequence run: six hardcoded calls, no model, no API key.
+It exists so the boundary can be examined on its own, without the model's
+variability in the way. For the run where a model decides what to call, see
+[scenario 3](03-the-document-that-gives-orders.md).
 
 The agent is bound to account `ACC-77` and holds the principal `claims-agent`.
 Its allowlist, in `k8s/30-broker.yaml` under the `tool-policy` ConfigMap:
@@ -37,7 +42,7 @@ resource — is where most agent authorisation designs fail.
 ## Then look at the record
 
 ```bash
-make audit
+task audit
 ```
 
 Every line is a decision, structured, with the principal, the tool, the
@@ -45,7 +50,7 @@ arguments, the session binding, and the reason. Not "the agent ran". What it
 asked for, and what it was told.
 
 ```bash
-make denials
+task denials
 ```
 
 Refusals only. This is the view a risk or compliance function asks for, and

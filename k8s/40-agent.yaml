@@ -84,7 +84,7 @@ data:
         print("-" * 72, flush=True)
         print("allowed: %d   denied: %d" % (allowed, denied), flush=True)
         print("every decision above is in the broker's audit stream.", flush=True)
-        print("run: make audit", flush=True)
+        print("run: task audit", flush=True)
 
     if __name__ == "__main__":
         main()

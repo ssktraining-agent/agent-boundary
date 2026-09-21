@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # The agent — with a real model in the loop.
 #
-# `make demo` runs the fixed-sequence agent in 40-agent.yaml: no model, no
+# `task demo` runs the fixed-sequence agent in 40-agent.yaml: no model, no
 # API key, deterministic. It exercises the boundary and nothing else.
 #
 # This one is the honest version of the claim. A model is given a task and
@@ -18,7 +18,7 @@ metadata:
   name: model-config
   namespace: agent-boundary
 data:
-  # Overridden by `make demo-agent MODEL_BASE_URL=... MODEL_NAME=...`
+  # Overridden by `task demo-agent MODEL_BASE_URL=... MODEL_NAME=...`
   MODEL_BASE_URL: "http://host.docker.internal:11434/v1"
   MODEL_NAME: "llama3.2:3b"
   MODEL_API_KEY: "not-needed"
@@ -198,7 +198,7 @@ data:
                 print("  %s" % e, flush=True)
                 print("\n  Start one:   ollama serve   (then: ollama pull %s)" % MODEL_NAME, flush=True)
                 print("  Or point at any OpenAI-compatible endpoint:", flush=True)
-                print("    make demo-agent MODEL_BASE_URL=... MODEL_NAME=... MODEL_API_KEY=...", flush=True)
+                print("    task demo-agent MODEL_BASE_URL=... MODEL_NAME=... MODEL_API_KEY=...", flush=True)
                 return
 
             msg = (resp.get("choices") or [{}])[0].get("message", {}) or {}
@@ -251,7 +251,7 @@ data:
         print("  allowed by the broker : %d" % allowed, flush=True)
         print("  refused by the broker : %d" % denied, flush=True)
         print("", flush=True)
-        print("every one of those decisions is in the audit stream: make audit", flush=True)
+        print("every one of those decisions is in the audit stream: task audit", flush=True)
 
 
     if __name__ == "__main__":
@@ -266,7 +266,7 @@ metadata:
   name: claims-agent-llm
   namespace: agent-boundary
 spec:
-  replicas: 0          # scaled up by `make demo-agent`
+  replicas: 0          # scaled up by `task demo-agent`
   selector:
     matchLabels: {app: claims-agent-llm}
   template:

@@ -54,7 +54,7 @@ data:
     import json, os, time, urllib.request, urllib.error
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
-    POLICY = json.load(open("/policy/policy.json"))
+    POLICY = json.load(open(os.environ.get("POLICY_PATH", "/policy/policy.json")))
     AUDIT_PATH = os.environ.get("AUDIT_PATH", "/dev/stdout")
 
     def audit(**fields):
@@ -147,7 +147,7 @@ data:
             pass  # the audit stream is the log that matters
 
     print("tool-broker listening on :8081", flush=True)
-    HTTPServer(("0.0.0.0", 8081), H).serve_forever()
+    HTTPServer(("0.0.0.0", int(os.environ.get("PORT", "8081"))), H).serve_forever()
 ---
 apiVersion: apps/v1
 kind: Deployment

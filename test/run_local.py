@@ -5,7 +5,7 @@ from the version that was already verified in-cluster). It tests the new
 part: a model-driven agent loop, the injection reaching the model's context,
 and the broker refusing what the model was talked into asking for.
 """
-import json, os, subprocess, sys, time, urllib.request, yaml
+import json, os, re, subprocess, sys, time, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORK = os.environ.get("WORKDIR") or os.path.join(
@@ -17,12 +17,36 @@ os.makedirs(SRC, exist_ok=True)
 CLAIMS_PORT, PAYMENTS_PORT, BROKER_PORT, MODEL_PORT = 18080, 18082, 18081, 18090
 
 
+def configmap_value(path, cm_name, key):
+    """Read one `key: |` block out of a ConfigMap, without PyYAML.
+
+    Deliberately narrow: it only understands the shape these manifests use,
+    so the test needs nothing beyond the Python standard library.
+    """
+    text = open(os.path.join(ROOT, path)).read()
+    for doc in re.split(r"^---\s*$", text, flags=re.M):
+        if not re.search(r"^kind:\s*ConfigMap\s*$", doc, re.M):
+            continue
+        if not re.search(r"^\s+name:\s*%s\s*$" % re.escape(cm_name), doc, re.M):
+            continue
+        lines = doc.split("\n")
+        for i, line in enumerate(lines):
+            if not re.match(r"^\s+%s:\s*\|\s*$" % re.escape(key), line):
+                continue
+            body = lines[i + 1:]
+            first = next((l for l in body if l.strip()), "")
+            indent = len(first) - len(first.lstrip())
+            out = []
+            for l in body:
+                if l.strip() and len(l) - len(l.lstrip()) < indent:
+                    break
+                out.append(l[indent:] if l.strip() else "")
+            return "\n".join(out).rstrip("\n") + "\n"
+    raise SystemExit("could not find %s in ConfigMap %s (%s)" % (key, cm_name, path))
+
+
 def extract(path, cm_name, key, out):
-    for doc in yaml.safe_load_all(open(os.path.join(ROOT, path))):
-        if doc and doc.get("kind") == "ConfigMap" and doc["metadata"]["name"] == cm_name:
-            open(os.path.join(SRC, out), "w").write(doc["data"][key])
-            return
-    raise SystemExit("could not find ConfigMap %s in %s" % (cm_name, path))
+    open(os.path.join(SRC, out), "w").write(configmap_value(path, cm_name, key))
 
 
 extract("k8s/20-services.yaml", "claims-api-src", "app.py", "claims_api.py")
@@ -31,10 +55,7 @@ extract("k8s/30-broker.yaml", "broker-src", "broker.py", "broker.py")
 extract("k8s/41-agent-llm.yaml", "agent-llm-src", "agent_llm.py", "agent_llm.py")
 
 # policy is identical to the shipped one, with upstreams pointed at localhost
-policy = None
-for doc in yaml.safe_load_all(open(os.path.join(ROOT, "k8s/30-broker.yaml"))):
-    if doc and doc.get("kind") == "ConfigMap" and doc["metadata"]["name"] == "tool-policy":
-        policy = json.loads(doc["data"]["policy.json"])
+policy = json.loads(configmap_value("k8s/30-broker.yaml", "tool-policy", "policy.json"))
 for spec in policy["tools"].values():
     spec["upstream"] = (spec["upstream"]
                         .replace("claims-api:8080", "127.0.0.1:%d" % CLAIMS_PORT)

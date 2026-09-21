@@ -3,8 +3,10 @@
 The broker's allowlist is the visible control. It is not the load-bearing one.
 
 ```bash
-make breach
+task breach
 ```
+
+(`task demo-agent` after a breach shows the same thing with a model driving.)
 
 This deletes every NetworkPolicy in the namespace and re-runs the agent.
 
@@ -33,7 +35,7 @@ constrained run, that grep returns nothing.
 Put it back:
 
 ```bash
-make restore
+task restore
 ```
 
 ## The point
@@ -54,6 +56,6 @@ shows six healthy policies while the bypass succeeds every time — a control
 that exists in the cluster, in the repo, and in the architecture diagram, and
 nowhere in the packet path.
 
-`make cluster` installs Calico for exactly this reason. When you port these
+`task cluster` installs Calico for exactly this reason. When you port these
 policies to your own cluster, the first question is not "did they apply" but
 "did anything change when they did".
