@@ -77,7 +77,7 @@ spec:
         - ipBlock:
             cidr: 0.0.0.0/0
             except:
-              - 192.168.0.0/16   # pod network — the tools live here
+              - 10.244.0.0/16    # pod network — the tools live here
               - 10.96.0.0/12     # service network
       ports:
         - {protocol: TCP, port: 11434}  # a model served on the host (Ollama)
