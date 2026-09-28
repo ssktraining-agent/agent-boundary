@@ -117,6 +117,48 @@ spec:
       ports:
         - {protocol: TCP, port: 8080}
 ---
+# The broker may egress to the MCP server. The agent may not — the MCP server
+# is a tool provider like any other, and discovery is a privileged call.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: broker-egress-mcp
+  namespace: agent-boundary
+spec:
+  podSelector:
+    matchLabels: {app: tool-broker}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {tier: mcp}
+      ports:
+        - {protocol: TCP, port: 8085}
+---
+# The MCP server accepts traffic only from the broker, and may reach only the
+# tools it fronts.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mcp-ingress-from-broker-only
+  namespace: agent-boundary
+spec:
+  podSelector:
+    matchLabels: {tier: mcp}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app: tool-broker}
+      ports:
+        - {protocol: TCP, port: 8085}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {tier: tool}
+      ports:
+        - {protocol: TCP, port: 8080}
+---
 # Tools accept traffic only from the broker. Not from agents. Not from
 # anything else in the namespace.
 apiVersion: networking.k8s.io/v1
@@ -132,5 +174,7 @@ spec:
     - from:
         - podSelector:
             matchLabels: {app: tool-broker}
+        - podSelector:
+            matchLabels: {tier: mcp}
       ports:
         - {protocol: TCP, port: 8080}

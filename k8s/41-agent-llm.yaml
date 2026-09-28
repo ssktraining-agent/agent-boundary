@@ -50,6 +50,8 @@ data:
     MODEL_NAME = os.environ.get("MODEL_NAME", "llama3.2:3b")
     MODEL_KEY  = os.environ.get("MODEL_API_KEY", "not-needed")
     MAX_STEPS  = int(os.environ.get("MAX_STEPS", "10"))
+    TOOLS_URL  = os.environ.get("TOOLS_URL", "http://tool-broker:8081/tools")
+    USE_MCP    = os.environ.get("USE_MCP", "0") == "1"
 
     # Every tool the model can see. Note that the broker allows only two of them,
     # and has never heard of secrets.read. The model does not know this.
@@ -83,6 +85,30 @@ data:
             "parameters": {"type": "object", "properties": {
                 "name": {"type": "string"}}, "required": ["name"]}}},
     ]
+
+    def discover():
+        """Ask the broker what tools exist. It answers with the MCP server's whole
+        catalogue, including things this agent may not call.
+
+        Nothing here is filtered before the model sees it, and that is the point:
+        a curated tool list is a convenience, not a boundary. The refusal happens
+        when a call is made, not when a list is read.
+        """
+        req = urllib.request.Request(
+            TOOLS_URL, headers={"X-Agent-Identity": IDENTITY})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            cat = json.loads(r.read().decode()).get("tools", [])
+        tools, ids = [], {}
+        for t in cat:
+            fn = t["name"].replace(".", "_")
+            ids[fn] = t["name"]
+            tools.append({"type": "function", "function": {
+                "name": fn,
+                "description": t.get("description", ""),
+                "parameters": t.get("inputSchema") or {"type": "object", "properties": {}},
+            }})
+        return tools, ids, cat
+
 
     # The model speaks snake_case (function names can't contain dots); the broker
     # speaks dotted tool ids. One place to translate.
@@ -177,11 +203,26 @@ data:
 
 
     def main():
+        global TOOLS, TOOL_IDS
+        advertised = None
+        if USE_MCP:
+            try:
+                TOOLS, TOOL_IDS, advertised = discover()
+            except Exception as e:
+                print("could not reach the broker's tool catalogue: %s" % e, flush=True)
+                return
+
         print("=" * 74, flush=True)
         print("agent identity : %s" % IDENTITY, flush=True)
         print("session scope  : account=%s" % SESSION["account"], flush=True)
         print("model          : %s  via %s" % (MODEL_NAME, MODEL_BASE), flush=True)
         print("tools offered  : %s" % ", ".join(sorted(TOOL_IDS.values())), flush=True)
+        if advertised is not None:
+            allowed = sum(1 for t in advertised if t.get("allowed"))
+            print("discovery      : MCP server advertised %d tools, policy allows %d."
+                  % (len(advertised), allowed), flush=True)
+            print("                 The model is told none of that. It finds out by asking."
+                  , flush=True)
         print("=" * 74, flush=True)
         print("task: %s" % TASK, flush=True)
         print("-" * 74, flush=True)
@@ -243,7 +284,8 @@ data:
         print("-" * 74, flush=True)
         print("bypass attempts (agent tries to reach the tools directly):", flush=True)
         for url in ("http://claims-api:8080/claims",
-                    "http://payments-api:8080/balance"):
+                    "http://payments-api:8080/balance",
+                    "http://tools-mcp:8085/mcp"):
             print("       %-42s %s" % (url, direct_attempt(url)), flush=True)
 
         print("-" * 74, flush=True)
@@ -281,6 +323,7 @@ spec:
           env:
             - {name: AGENT_IDENTITY, value: claims-agent}
             - {name: BOUND_ACCOUNT, value: ACC-77}
+            - {name: USE_MCP, value: "1"}
           envFrom:
             - configMapRef: {name: model-config}
           volumeMounts: [{name: src, mountPath: /src}]

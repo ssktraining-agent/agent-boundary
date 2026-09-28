@@ -30,11 +30,12 @@ data:
           "deny_reason_default": "not in allowlist for principal 'claims-agent'"
         }
       },
+      "mcp_url": "http://tools-mcp:8085/mcp",
       "tools": {
-        "claims.read":     {"upstream": "http://claims-api:8080/claims/{id}",  "method": "GET"},
-        "claims.list":     {"upstream": "http://claims-api:8080/claims",       "method": "GET"},
-        "payments.read":   {"upstream": "http://payments-api:8080/balance",    "method": "GET"},
-        "payments.execute":{"upstream": "http://payments-api:8080/pay",        "method": "POST"}
+        "claims.read":     {"mcp": true, "upstream": "http://claims-api:8080/claims/{id}",  "method": "GET"},
+        "claims.list":     {"mcp": true, "upstream": "http://claims-api:8080/claims",       "method": "GET"},
+        "payments.read":   {"mcp": true, "upstream": "http://payments-api:8080/balance",    "method": "GET"},
+        "payments.execute":{"mcp": true, "upstream": "http://payments-api:8080/pay",        "method": "POST"}
       }
     }
 ---
@@ -85,8 +86,32 @@ data:
                 return False, "out of scope: session bound to %s, call asked for %s" % (bound, asked)
         return True, "allowed by policy"
 
+    MCP_URL = POLICY.get("mcp_url")
+
+    def mcp(method, params=None, rid=1):
+        """One JSON-RPC call to the MCP server."""
+        body = json.dumps({"jsonrpc": "2.0", "id": rid, "method": method,
+                           "params": params or {}}).encode()
+        req = urllib.request.Request(MCP_URL, data=body, method="POST",
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return json.loads(r.read().decode())
+
+    def mcp_catalogue():
+        """Everything the MCP server advertises — not everything we permit."""
+        return (mcp("tools/list").get("result") or {}).get("tools", [])
+
     def call_upstream(tool, args):
         spec = POLICY["tools"][tool]
+        if spec.get("mcp") and MCP_URL:
+            res = mcp("tools/call", {"name": tool, "arguments": args}).get("result") or {}
+            text = "".join(c.get("text", "") for c in res.get("content", []))
+            if res.get("isError"):
+                raise RuntimeError(text or "mcp tool error")
+            try:
+                return json.loads(text)
+            except ValueError:
+                return {"text": text}
         url = spec["upstream"].format(**{k: str(v) for k, v in args.items()})
         req = urllib.request.Request(url, method=spec["method"])
         with urllib.request.urlopen(req, timeout=5) as r:
@@ -104,6 +129,32 @@ data:
         def do_GET(self):
             if self.path == "/healthz":
                 return self._send(200, {"ok": True})
+
+            if self.path == "/tools":
+                # The agent asks the broker what tools exist. It gets the MCP
+                # server's whole catalogue — including tools this principal
+                # may not call, and tools no policy has ever heard of.
+                #
+                # Filtering the catalogue here would look tidier and protect
+                # nothing: an agent that can compose a call does not need the
+                # list. Discovery and authorisation are separate questions,
+                # answered at separate moments, and only the second one is a
+                # control. `allowed` below is advisory. /invoke is the gate.
+                principal = self.headers.get("X-Agent-Identity", "anonymous")
+                try:
+                    cat = mcp_catalogue()
+                except Exception as e:
+                    return self._send(502, {"error": "mcp unreachable: %s" % e})
+                out = []
+                for t in cat:
+                    ok, why = decide(principal, t["name"], {}, {})
+                    out.append({**t, "allowed": ok, "policy": why})
+                audit(decision="LIST", principal=principal,
+                      tool="tools/list", args={},
+                      reason="advertised %d tools, %d allowed for this principal"
+                             % (len(out), sum(1 for t in out if t["allowed"])))
+                return self._send(200, {"tools": out})
+
             self._send(404, {"error": "no such route"})
 
         def do_POST(self):

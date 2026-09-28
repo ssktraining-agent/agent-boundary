@@ -1,0 +1,198 @@
+# ---------------------------------------------------------------------------
+# The tools, behind an MCP server.
+#
+# This is how most teams will actually wire agents up: the tools live behind
+# a Model Context Protocol server, and the agent discovers them at runtime.
+#
+# It changes nothing about where the boundary goes. The agent still has no
+# route to this server — only the broker does — and the broker still decides
+# every call against policy before forwarding it.
+#
+# What it does add is a new way to be wrong. This server's catalogue includes
+# `secrets.read`, which appears in no policy. An MCP server chooses what to
+# advertise; swap in a vendor's server next quarter and the catalogue changes
+# without a review. If your authorisation comes from the catalogue, your
+# authorisation is written by whoever runs the server.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tools-mcp-src
+  namespace: agent-boundary
+data:
+  server.py: |
+    """An MCP server in front of the claims and payments services.
+
+    Speaks JSON-RPC 2.0 over HTTP: initialize, tools/list, tools/call — the
+    subset of the Model Context Protocol this demo needs, in stdlib Python so
+    it can be read in one sitting.
+
+    Note what it advertises. `secrets.read` is offered by this server and has
+    never appeared in any policy. That is deliberate: an MCP server decides
+    what to put in its own catalogue, and a catalogue is not a permission.
+    Swap in a third-party MCP server tomorrow and the catalogue changes
+    without anyone reviewing it.
+    """
+    import json, os, urllib.request, urllib.error
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    CLAIMS = os.environ.get("CLAIMS_URL", "http://claims-api:8080")
+    PAYMENTS = os.environ.get("PAYMENTS_URL", "http://payments-api:8080")
+
+    TOOLS = [
+        {"name": "claims.list",
+         "description": "List the claims on an account.",
+         "inputSchema": {"type": "object",
+                         "properties": {"account": {"type": "string"}},
+                         "required": ["account"]}},
+        {"name": "claims.read",
+         "description": "Read one claim record in full.",
+         "inputSchema": {"type": "object",
+                         "properties": {"id": {"type": "string"},
+                                        "account": {"type": "string"}},
+                         "required": ["id", "account"]}},
+        {"name": "payments.read",
+         "description": "Read the available payment balance.",
+         "inputSchema": {"type": "object", "properties": {}}},
+        {"name": "payments.execute",
+         "description": "Execute a settlement payment.",
+         "inputSchema": {"type": "object",
+                         "properties": {"amount": {"type": "number"}},
+                         "required": ["amount"]}},
+        # Advertised by this server. In no policy, anywhere.
+        {"name": "secrets.read",
+         "description": "Read a stored credential by name.",
+         "inputSchema": {"type": "object",
+                         "properties": {"name": {"type": "string"}},
+                         "required": ["name"]}},
+    ]
+
+
+    def http_json(url, method="GET", body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(url, data=data, method=method,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read().decode())
+
+
+    def run_tool(name, args):
+        if name == "claims.list":
+            return http_json("%s/claims" % CLAIMS)
+        if name == "claims.read":
+            return http_json("%s/claims/%s" % (CLAIMS, args.get("id", "")))
+        if name == "payments.read":
+            return http_json("%s/balance" % PAYMENTS)
+        if name == "payments.execute":
+            return http_json("%s/pay" % PAYMENTS, method="POST", body=args)
+        if name == "secrets.read":
+            # Never reached in this demo: the broker refuses it first. Left here
+            # so the server is honest about what its catalogue implies.
+            return {"error": "no credential store is wired to this demo"}
+        raise ValueError("no such tool: %s" % name)
+
+
+    class H(BaseHTTPRequestHandler):
+        def _send(self, code, body):
+            raw = json.dumps(body).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_GET(self):
+            if self.path == "/healthz":
+                return self._send(200, {"ok": True})
+            self._send(404, {"error": "no such route"})
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            try:
+                req = json.loads(self.rfile.read(n) or b"{}")
+            except ValueError:
+                return self._send(400, {"jsonrpc": "2.0", "id": None,
+                                        "error": {"code": -32700, "message": "parse error"}})
+
+            rid, method = req.get("id"), req.get("method", "")
+            params = req.get("params", {}) or {}
+            print("mcp %s" % method, flush=True)
+
+            if method == "initialize":
+                return self._send(200, {"jsonrpc": "2.0", "id": rid, "result": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "claims-tools", "version": "1.0.0"}}})
+
+            if method == "tools/list":
+                return self._send(200, {"jsonrpc": "2.0", "id": rid,
+                                        "result": {"tools": TOOLS}})
+
+            if method == "tools/call":
+                name = params.get("name", "")
+                args = params.get("arguments", {}) or {}
+                try:
+                    out = run_tool(name, args)
+                except ValueError as e:
+                    return self._send(200, {"jsonrpc": "2.0", "id": rid, "result": {
+                        "isError": True,
+                        "content": [{"type": "text", "text": str(e)}]}})
+                except Exception as e:
+                    return self._send(200, {"jsonrpc": "2.0", "id": rid, "result": {
+                        "isError": True,
+                        "content": [{"type": "text", "text": "upstream error: %s" % e}]}})
+                return self._send(200, {"jsonrpc": "2.0", "id": rid, "result": {
+                    "isError": False,
+                    "content": [{"type": "text", "text": json.dumps(out)}]}})
+
+            self._send(200, {"jsonrpc": "2.0", "id": rid,
+                             "error": {"code": -32601, "message": "method not found"}})
+
+        def log_message(self, fmt, *args):
+            pass
+
+
+    print("tools-mcp listening on :%s" % os.environ.get("PORT", "8085"), flush=True)
+    HTTPServer(("0.0.0.0", int(os.environ.get("PORT", "8085"))), H).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tools-mcp
+  namespace: agent-boundary
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: tools-mcp}
+  template:
+    metadata:
+      labels: {app: tools-mcp, tier: mcp}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: server
+          image: python:3.12-alpine
+          command: ["python", "-u", "/src/server.py"]
+          ports: [{containerPort: 8085}]
+          volumeMounts: [{name: src, mountPath: /src}]
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8085}
+            initialDelaySeconds: 3
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10002
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+      volumes:
+        - name: src
+          configMap: {name: tools-mcp-src}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tools-mcp
+  namespace: agent-boundary
+spec:
+  selector: {app: tools-mcp}
+  ports: [{port: 8085, targetPort: 8085}]

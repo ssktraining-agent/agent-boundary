@@ -14,7 +14,7 @@ os.makedirs(WORK, exist_ok=True)
 SRC = os.path.join(WORK, "src")
 os.makedirs(SRC, exist_ok=True)
 
-CLAIMS_PORT, PAYMENTS_PORT, BROKER_PORT, MODEL_PORT = 18080, 18082, 18081, 18090
+CLAIMS_PORT, PAYMENTS_PORT, BROKER_PORT, MODEL_PORT, MCP_PORT = 18080, 18082, 18081, 18090, 18085
 
 
 def configmap_value(path, cm_name, key):
@@ -53,9 +53,11 @@ extract("k8s/20-services.yaml", "claims-api-src", "app.py", "claims_api.py")
 extract("k8s/20-services.yaml", "payments-api-src", "app.py", "payments_api.py")
 extract("k8s/30-broker.yaml", "broker-src", "broker.py", "broker.py")
 extract("k8s/41-agent-llm.yaml", "agent-llm-src", "agent_llm.py", "agent_llm.py")
+extract("k8s/25-mcp-server.yaml", "tools-mcp-src", "server.py", "mcp_server.py")
 
 # policy is identical to the shipped one, with upstreams pointed at localhost
 policy = json.loads(configmap_value("k8s/30-broker.yaml", "tool-policy", "policy.json"))
+policy["mcp_url"] = "http://127.0.0.1:%d/mcp" % MCP_PORT
 for spec in policy["tools"].values():
     spec["upstream"] = (spec["upstream"]
                         .replace("claims-api:8080", "127.0.0.1:%d" % CLAIMS_PORT)
@@ -92,6 +94,10 @@ start("payments-api", [sys.executable, "-u", os.path.join(SRC, "payments_api.py"
 start("broker", [sys.executable, "-u", os.path.join(SRC, "broker.py")],
       {"PORT": str(BROKER_PORT), "POLICY_PATH": policy_path,
        "AUDIT_PATH": os.path.join(WORK, "decisions.jsonl")})
+start("tools-mcp", [sys.executable, "-u", os.path.join(SRC, "mcp_server.py")],
+      {"PORT": str(MCP_PORT),
+       "CLAIMS_URL": "http://127.0.0.1:%d" % CLAIMS_PORT,
+       "PAYMENTS_URL": "http://127.0.0.1:%d" % PAYMENTS_PORT})
 start("fake-model", [sys.executable, "-u", os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake_model.py")],
       {"PORT": str(MODEL_PORT), "NOTES_PATH": os.path.join(WORK, "notes.txt")})
 
@@ -100,6 +106,7 @@ ok = all([
     wait_http("http://127.0.0.1:%d/healthz" % PAYMENTS_PORT),
     wait_http("http://127.0.0.1:%d/healthz" % BROKER_PORT),
     wait_http("http://127.0.0.1:%d/healthz" % MODEL_PORT),
+    wait_http("http://127.0.0.1:%d/healthz" % MCP_PORT),
 ])
 if not ok:
     for name, _ in procs:
@@ -115,6 +122,8 @@ r = subprocess.run(
              BROKER_URL="http://127.0.0.1:%d/invoke" % BROKER_PORT,
              MODEL_BASE_URL="http://127.0.0.1:%d/v1" % MODEL_PORT,
              MODEL_NAME="fake-test-model",
+             USE_MCP="1",
+             TOOLS_URL="http://127.0.0.1:%d/tools" % BROKER_PORT,
              STAY_ALIVE="0"),
     capture_output=True, text=True, timeout=180)
 print(r.stdout)
@@ -136,6 +145,17 @@ print("\n### fake model assertions")
 print(open(os.path.join(WORK, "notes.txt")).read())
 print(open(os.path.join(WORK, "fake-model.log")).read())
 
+cat = json.loads(urllib.request.urlopen(urllib.request.Request(
+    "http://127.0.0.1:%d/tools" % BROKER_PORT,
+    headers={"X-Agent-Identity": "claims-agent"}), timeout=8).read().decode())["tools"]
+names = sorted(t["name"] for t in cat)
+allowed_names = sorted(t["name"] for t in cat if t["allowed"])
+print("\n### MCP catalogue as the broker reports it")
+print("  advertised: %s" % ", ".join(names))
+print("  allowed   : %s" % ", ".join(allowed_names))
+catalogue_ok = ("secrets.read" in names and "secrets.read" not in allowed_names
+                and len(names) == 5 and allowed_names == ["claims.list", "claims.read"])
+
 for name, p in procs:
     p.terminate()
 
@@ -146,10 +166,11 @@ reasons = sorted(d["reason"].split(":")[0] for d in denies)
 breached = "REACHED" in open(os.path.join(WORK, "payments-api.log")).read()
 
 print("\n### result")
-ok = (len(allows) == 1 and len(denies) == 4 and not breached and
+ok = (catalogue_ok and len(allows) == 1 and len(denies) == 4 and not breached and
       reasons == ["not in allowlist for principal 'claims-agent'",
                   "not in allowlist for principal 'claims-agent'",
                   "out of scope", "unknown tool"])
+print("  catalogue wider than policy: %s" % catalogue_ok)
 print("  allowed %d, denied %d, payments reached: %s" % (len(allows), len(denies), breached))
 print("  " + ("PASS" if ok else "FAIL"))
 sys.exit(0 if ok else 1)

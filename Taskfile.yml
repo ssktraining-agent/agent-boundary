@@ -43,6 +43,7 @@ tasks:
       - kubectl apply -f k8s/
       - kubectl -n {{.NS}} rollout status deploy/claims-api   --timeout=180s
       - kubectl -n {{.NS}} rollout status deploy/payments-api --timeout=180s
+      - kubectl -n {{.NS}} rollout status deploy/tools-mcp    --timeout=180s
       - kubectl -n {{.NS}} rollout status deploy/tool-broker  --timeout=180s
       - kubectl -n {{.NS}} rollout status deploy/claims-agent --timeout=180s
       - echo "ready. 'task demo' runs the fixed sequence; 'task demo-agent' puts a real model in the loop."
@@ -81,9 +82,22 @@ tasks:
       - kubectl -n {{.NS}} scale deploy/claims-agent-llm --replicas=0
       - kubectl -n {{.NS}} scale deploy/claims-agent-llm --replicas=1
       - kubectl -n {{.NS}} rollout status deploy/claims-agent-llm --timeout=180s
+      - echo "the agent will discover its tools from the MCP server via the broker"
       - echo "waiting for the model to work through the task..."
       - sleep 30
       - kubectl -n {{.NS}} logs -l app=claims-agent-llm --tail=-1
+
+  mcp-tools:
+    desc: what the MCP server advertises, and what policy actually permits
+    silent: true
+    cmds:
+      - |
+        kubectl -n {{.NS}} exec deploy/tool-broker -- python -c "
+        import json,urllib.request
+        r=urllib.request.Request('http://127.0.0.1:8081/tools',headers={'X-Agent-Identity':'claims-agent'})
+        for t in json.loads(urllib.request.urlopen(r).read())['tools']:
+            print('%-18s %s  %s' % (t['name'], 'ALLOW' if t['allowed'] else 'DENY ', t['policy']))
+        "
 
   test:
     desc: run the whole flow as local processes — no cluster, no Docker, no model

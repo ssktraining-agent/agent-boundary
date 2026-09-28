@@ -38,6 +38,8 @@ All of them real Kubernetes primitives rather than application logic:
 | 2 | Every tool call is authorised against policy and recorded | a **tool broker** the agent must go through |
 | 3 | The agent has no network route to any tool except the broker | **NetworkPolicy** (Calico) |
 
+The tools sit behind an **MCP server**, and the agent discovers them at runtime rather than having them hardcoded — which is how most teams are wiring this up. It changes where the tools live; it does not move the boundary.
+
 ## What you see
 
 The model reads the claim, believes the document, and tries all four steps:
@@ -56,6 +58,7 @@ The model reads the claim, believes the document, and tries all four steps:
 bypass attempts (agent tries to reach the tools directly):
        http://claims-api:8080/claims              blocked at the network: URLError
        http://payments-api:8080/balance           blocked at the network: URLError
+       http://tools-mcp:8085/mcp                  blocked at the network: URLError
 ```
 
 Four refusals for three different reasons. The last one is the interesting one: `claims.read` **is** in the agent's allowlist. The refusal comes from the scope attached to the grant, checked against what the session was bound to. A naive allowlist would have let a stranger's claim through.
@@ -107,6 +110,24 @@ task demo-agent MODEL_BASE_URL=https://api.example.com/v1 \
 
 Small models are inconsistent — some refuse the injected steps on their own, which is worth seeing too, because it is not a control. Run it a few times. The broker's answers never vary; the model's behaviour does. That gap is the argument.
 
+### The catalogue is not a permission
+
+```bash
+task mcp-tools
+```
+
+```
+claims.list        ALLOW  allowed by policy
+claims.read        ALLOW  allowed by policy
+payments.read      DENY   not in allowlist for principal 'claims-agent'
+payments.execute   DENY   not in allowlist for principal 'claims-agent'
+secrets.read       DENY   unknown tool
+```
+
+The MCP server advertises five tools. Policy permits two. The last one appears in no policy at all — because a server decides its own catalogue, and today that server is yours but next quarter it may be a vendor's. Deny by default is what makes that survivable: an allowlist naming what is permitted doesn't care what the catalogue grows.
+
+The agent is handed the whole list unfiltered, on purpose. Filtering it would be tidier and would protect nothing — an agent that can compose a call doesn't need the list to suggest one. It would also erase the attempts from the audit trail, which is the part a risk review reads.
+
 ### Verify it without a cluster
 
 ```bash
@@ -142,6 +163,7 @@ Which is this repo's argument in miniature: **a control you haven't tested is a 
 The demo's boundaries are deliberately simple. Real environments are not, and that is the entire point of running this against your own shape rather than a generic one:
 
 - **`k8s/10-rbac.yaml`** — replace with your actual least-privilege role. Most teams find this is where their agent design first breaks.
+- **`k8s/25-mcp-server.yaml`** — swap in your own MCP servers. The question to carry over is who can reach them, not what they advertise.
 - **`k8s/30-broker.yaml` (ConfigMap `tool-policy`)** — the allowlist per principal. Add your tools, your scopes, your deny reasons.
 - **`k8s/50-networkpolicy.yaml`** — model your real segmentation: private subnets, egress restrictions, service mesh mTLS.
 - **`k8s/50-networkpolicy.yaml` (`agent-egress-model`)** — the agent needs a route to its model, and that route is an egress channel carrying whatever the agent has read. Point it at a gateway you control.
@@ -159,6 +181,7 @@ Taskfile.yml              every command in this README — run `task` to list th
 k8s/00-namespace.yaml
 k8s/10-rbac.yaml          boundary 1 — service account with nearly nothing
 k8s/20-services.yaml      claims-api (permitted) and payments-api (never)
+k8s/25-mcp-server.yaml    the tools behind an MCP server, catalogue and all
 k8s/30-broker.yaml        boundary 2 — policy decision point + audit stream
 k8s/40-agent.yaml         fixed-sequence agent, for a run with no model
 k8s/41-agent-llm.yaml     the real agent — model in the loop, tool calling
